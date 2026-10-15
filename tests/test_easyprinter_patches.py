@@ -190,3 +190,26 @@ async def test_sender_stages_only_capped_steps(state):
     await s._stage_campaign_native(camp)
     rows = await state.get_outbox(status="pending_review", limit=50)
     assert [r["step"] for r in rows if r["prospect_id"] == pid] == [1]
+
+
+# ── P4 + P5: HARVEY_DISABLE_SCOUT and print-shop OSM tags ──
+
+
+async def test_disable_scout_env_turns_prospecting_into_idle(monkeypatch):
+    from harvey.main import decide_next_action
+
+    summary = {"prospects": {"new": 0}, "draft_campaigns": 0, "open_conversations": 0}
+    monkeypatch.delenv("HARVEY_DISABLE_SCOUT", raising=False)
+    assert await decide_next_action(None, None, _config(), summary=summary) == "prospect"
+    monkeypatch.setenv("HARVEY_DISABLE_SCOUT", "1")
+    assert await decide_next_action(None, None, _config(), summary=summary) == "idle"
+    summary["prospects"]["new"] = 3
+    assert await decide_next_action(None, None, _config(), summary=summary) == "write_campaign"
+
+
+def test_osm_tag_map_knows_print_shops():
+    from harvey.collectors.discover import OpenStreetMap
+
+    assert OpenStreetMap.TAG_MAP["print"] == ['shop=copyshop', 'craft=printer', 'shop=printing']
+    osm = OpenStreetMap.__new__(OpenStreetMap)
+    assert osm._tags("print shop") == ['shop=copyshop', 'craft=printer', 'shop=printing']

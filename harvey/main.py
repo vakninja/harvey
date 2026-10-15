@@ -73,6 +73,14 @@ def seconds_until_quiet_hours_end(config: HarveyConfig) -> int:
     return max(int(delta.total_seconds()), 60)
 
 
+def _scout_disabled() -> bool:
+    """HARVEY_DISABLE_SCOUT=1: never run Scout. Used when prospects are
+    imported from outside (POST /api/import/prospects) and Harvey's own
+    discovery would only burn model budget."""
+    import os
+    return os.environ.get("HARVEY_DISABLE_SCOUT", "").strip().lower() in ("1", "true", "yes")
+
+
 async def decide_next_action(
     brain: Brain,
     state: StateManager,
@@ -100,8 +108,10 @@ async def decide_next_action(
         action, reason = "send_campaign", f"{draft_campaigns} draft campaign(s) ready to deploy"
     elif new_prospects > 0:
         action, reason = "write_campaign", f"{new_prospects} new prospect(s) with no drafts ready"
-    elif new_prospects < 20:
+    elif new_prospects < 20 and not _scout_disabled():
         action, reason = "prospect", f"only {new_prospects} new prospect(s); pipeline needs leads"
+    elif new_prospects < 20:
+        action, reason = "idle", "prospecting disabled (HARVEY_DISABLE_SCOUT); waiting for imported prospects"
     else:
         action, reason = "idle", "pipeline is healthy; running analysis"
 

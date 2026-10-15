@@ -496,6 +496,7 @@ class OpenStreetMap(DiscoveryProvider):
         "attorney": ['office=lawyer'],
         "contractor": ['craft=builder', 'office=construction_company'],
         "landscap": ['craft=gardener', 'shop=garden_centre'],
+        "print": ['shop=copyshop', 'craft=printer', 'shop=printing'],
     }
 
     def _tags(self, term: str) -> list[str]:
