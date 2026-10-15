@@ -44,6 +44,11 @@ class Writer:
     def is_native(self) -> bool:
         return self.config.channels.email.provider in NATIVE_PROVIDERS
 
+    @property
+    def max_steps(self) -> int:
+        """channels.email.max_sequence_steps (defaults to upstream's 3)."""
+        return int(getattr(self.config.channels.email, "max_sequence_steps", 3) or 3)
+
     async def run(self):
         """Create email campaigns for prospects that need outreach."""
         logger.info("Writer: Crafting email campaigns...")
@@ -210,7 +215,12 @@ class Writer:
         if self.skills:
             prompt += "\n\n" + self.skills
 
-        prompt += f"""
+        facts_text = chr(10).join(facts)
+        if self.brain.has_prompt("writer_personal"):
+            # Operator-supplied instructions replace the inline English ones.
+            prompt += "\n\n" + self.brain.load_prompt("writer_personal", facts=facts_text)
+        else:
+            prompt += f"""
 
 Write ONE cold email (the very first touch) to this specific person.
 
@@ -218,7 +228,7 @@ FACTS — everything you know about them. Every claim about the prospect in
 your email must come from these facts. If a fact isn't listed here, you
 don't know it — do not invent funding rounds, mutual contacts, metrics,
 or anything else:
-{chr(10).join(facts)}
+{facts_text}
 
 Requirements:
 - Under 75 words. One specific observation from the FACTS above, one
@@ -275,15 +285,43 @@ Pricing: {self.config.product.pricing}"""
         if self.skills:
             prompt += "\n\n" + self.skills
 
-        prompt += f"""
+        n = self.max_steps
+        if self.brain.has_prompt("writer_sequence"):
+            # Operator-supplied instructions (e.g. a non-English market with
+            # its own legal format) replace the inline English ones.
+            prompt += "\n\n" + self.brain.load_prompt(
+                "writer_sequence", prospect_summary=prospect_summary, steps=str(n),
+            )
+        else:
+            prompt += "\n\n" + self._default_sequence_instructions(n, prospect_summary)
 
-Write a 3-email cold outreach sequence for prospects like these:
+        result = await self.brain.think_json(
+            prompt, session_id="harvey-writer",
+            agent="writer", task="write_sequence",
+        )
+        return self._parse_sequence(result)
+
+    @staticmethod
+    def _default_sequence_instructions(n: int, prospect_summary: str) -> str:
+        """Upstream's English instructions, generalised to n steps."""
+        lines = ["- Email 1: Personalized cold observation + one question. Under 75 words. No pitch."]
+        if n >= 2:
+            lines.append("- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. Under 75 words.")
+        if n >= 3:
+            lines.append("- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.")
+        for k in range(4, n + 1):
+            lines.append(f"- Email {k}: One more gentle, different-angle touch. Under 40 words.")
+        delays = [0, 3, 4] + [5] * max(0, n - 3)
+        example = ",\n".join(
+            f'  {{"step": {k}, "subject": "...", "body": "...", "delay_days": {delays[k - 1]}}}'
+            for k in range(1, n + 1)
+        )
+        label = "ONE email (no follow-ups)" if n == 1 else f"a {n}-email cold outreach sequence"
+        return f"""Write {label} for prospects like these:
 {prospect_summary}
 
 Requirements:
-- Email 1: Personalized cold observation + one question. Under 75 words. No pitch.
-- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. Under 75 words.
-- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.
+{chr(10).join(lines)}
 - Use {{{{first_name}}}}, {{{{company}}}}, {{{{title}}}} as merge variables — every email
   must use at least one, and email 1 must reference something specific to
   these prospects' industry or role (use the notes above).
@@ -293,16 +331,8 @@ Requirements:
 
 Return ONLY a JSON array (no markdown fences, no commentary):
 [
-  {{"step": 1, "subject": "...", "body": "...", "delay_days": 0}},
-  {{"step": 2, "subject": "...", "body": "...", "delay_days": 3}},
-  {{"step": 3, "subject": "...", "body": "...", "delay_days": 4}}
+{example}
 ]"""
-
-        result = await self.brain.think_json(
-            prompt, session_id="harvey-writer",
-            agent="writer", task="write_sequence",
-        )
-        return self._parse_sequence(result)
 
     def _parse_sequence(self, result) -> list[EmailStep]:
         """Robustly coerce LLM output into a validated EmailStep list.
@@ -322,7 +352,7 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             return []
 
         steps: list[EmailStep] = []
-        for i, raw in enumerate(result[:5]):  # never accept absurdly long sequences
+        for i, raw in enumerate(result[: self.max_steps]):  # hard cap per campaign
             if not isinstance(raw, dict):
                 logger.warning(f"Writer: Skipping non-dict step at index {i}.")
                 continue
@@ -350,8 +380,8 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         if steps and steps[0].delay_days != 0:
             steps[0].delay_days = 0  # first email always sends immediately
 
-        if len(steps) < 3:
-            logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
+        if len(steps) < self.max_steps:
+            logger.warning(f"Writer: Expected {self.max_steps} emails, got {len(steps)}.")
         return steps
 
     def _group_prospects(self, prospects: list) -> dict[str, list]:

@@ -651,6 +651,10 @@ class Brain:
             )
         return template
 
+    def has_prompt(self, prompt_name: str) -> bool:
+        """Whether an optional prompt override file exists (no warning when absent)."""
+        return (PROMPTS_DIR / f"{prompt_name}.md").is_file()
+
     def load_skill(self, skill_name: str) -> str:
         """Load a skill knowledge file from the skills/ directory."""
         skill_file = SKILLS_DIR / f"{skill_name}.md"

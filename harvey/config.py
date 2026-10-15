@@ -86,6 +86,17 @@ class EmailChannelConfig(BaseModel):
     # Kill switch: pause all sending when bounces exceed this fraction of
     # sent mail (measured over the trailing sends). 0 disables the switch.
     max_bounce_rate: float = 0.05
+    # Hard cap on emails per prospect per campaign. The Writer keeps at most
+    # this many steps and the Sender stages at most this many. 1 = a single
+    # message, never a follow-up (e.g. Israel's §30A(c) one-message rule).
+    max_sequence_steps: int = 3
+
+    @field_validator("max_sequence_steps")
+    @classmethod
+    def _steps_in_range(cls, v: int) -> int:
+        if not 1 <= v <= 5:
+            raise ValueError("max_sequence_steps must be between 1 and 5")
+        return v
 
     @field_validator("max_daily_sends")
     @classmethod

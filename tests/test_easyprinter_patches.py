@@ -1,0 +1,161 @@
+"""Tests for the easyprinter fork patches.
+
+See the marketing repo: docs/superpowers/plans/2026-10-16-phase1a-harvey-engine.md
+"""
+import os
+import tempfile
+
+import pytest
+import pytest_asyncio
+
+import harvey.brain as brain_mod
+from harvey.brain import Brain
+from harvey.config import (
+    ChannelsConfig,
+    EmailChannelConfig,
+    EnvConfig,
+    HarveyConfig,
+    ICPConfig,
+    PersonaConfig,
+    ProductConfig,
+)
+from harvey.models.prospect import Prospect
+from harvey.state import StateManager
+
+pytestmark = pytest.mark.asyncio
+
+
+def _config(**email) -> HarveyConfig:
+    return HarveyConfig(
+        persona=PersonaConfig(
+            name="עמית", company="Easy Printer", role="בעלים",
+            email="outreach@easyprinter.co.il", linkedin="", tone="חם וישיר",
+        ),
+        product=ProductConfig(
+            name="Easy Printer", description="תוכנה לבתי דפוס", pricing="302 ש\"ח",
+            key_benefits=["פנקסים"], objection_responses={},
+        ),
+        icp=ICPConfig(industries=["print-shop"], company_size="1-10", titles=["בעלים"], geography=["Israel"]),
+        channels=ChannelsConfig(email=EmailChannelConfig(provider="smtp", **email)),
+    )
+
+
+class FakeBrain:
+    """Real prompt loading (from a monkeypatched PROMPTS_DIR), fake model calls."""
+
+    load_prompt = Brain.load_prompt
+    has_prompt = Brain.has_prompt
+
+    def __init__(self, result=None):
+        self.result = result
+        self.prompts = []
+
+    def load_skills_for_agent(self, agent):
+        return ""
+
+    async def think_json(self, prompt, **kw):
+        self.prompts.append(prompt)
+        return self.result
+
+
+@pytest_asyncio.fixture
+async def state():
+    with tempfile.TemporaryDirectory() as d:
+        sm = StateManager(os.path.join(d, "t.db"))
+        await sm.init_db()
+        yield sm
+
+
+THREE = [
+    {"step": 1, "subject": "a", "body": "b", "delay_days": 0},
+    {"step": 2, "subject": "c", "body": "d", "delay_days": 3},
+    {"step": 3, "subject": "e", "body": "f", "delay_days": 4},
+]
+
+
+# ── P1 + P2: max_sequence_steps and prompt override files ──
+
+
+def test_max_sequence_steps_default_and_bounds():
+    assert EmailChannelConfig().max_sequence_steps == 3
+    assert EmailChannelConfig(max_sequence_steps=1).max_sequence_steps == 1
+    with pytest.raises(Exception):
+        EmailChannelConfig(max_sequence_steps=0)
+    with pytest.raises(Exception):
+        EmailChannelConfig(max_sequence_steps=6)
+
+
+async def test_writer_parse_keeps_only_capped_steps(state):
+    from harvey.agents.writer import Writer
+
+    w = Writer(FakeBrain(), state, _config(max_sequence_steps=1))
+    steps = w._parse_sequence(THREE)
+    assert [s.step for s in steps] == [1]
+    w3 = Writer(FakeBrain(), state, _config())
+    assert [s.step for s in w3._parse_sequence(THREE)] == [1, 2, 3]
+
+
+async def test_writer_sequence_prompt_asks_for_one_email(state, monkeypatch, tmp_path):
+    from harvey.agents.writer import Writer
+
+    monkeypatch.setattr(brain_mod, "PROMPTS_DIR", tmp_path)  # no override files
+    brain = FakeBrain(result=THREE)
+    w = Writer(brain, state, _config(max_sequence_steps=1))
+    w.skills = ""
+    steps = await w._write_sequence([Prospect(first_name="דפוס", last_name="", title="בעלים", company="דפוס")])
+    assert len(steps) == 1
+    p = brain.prompts[0]
+    assert "ONE email" in p
+    assert "Email 2" not in p and '"step": 2' not in p
+
+
+async def test_writer_sequence_prompt_override_file(state, monkeypatch, tmp_path):
+    from harvey.agents.writer import Writer
+
+    (tmp_path / "writer_sequence.md").write_text(
+        "כתוב {{steps}} מייל אחד עבור:\n{{prospect_summary}}\nRETURN JSON", encoding="utf-8"
+    )
+    monkeypatch.setattr(brain_mod, "PROMPTS_DIR", tmp_path)
+    brain = FakeBrain(result=THREE[:1])
+    w = Writer(brain, state, _config(max_sequence_steps=1))
+    w.skills = ""
+    await w._write_sequence([Prospect(first_name="דפוס הברון", last_name="", title="בעלים", company="דפוס הברון")])
+    p = brain.prompts[0]
+    assert "כתוב 1 מייל אחד" in p and "דפוס הברון" in p
+    assert "Write a" not in p  # upstream inline text replaced
+
+
+async def test_writer_personal_prompt_override_file(state, monkeypatch, tmp_path):
+    from harvey.agents.writer import Writer
+
+    (tmp_path / "writer_personal.md").write_text("עובדות:\n{{facts}}\nכתוב מייל פרסומת אחד.", encoding="utf-8")
+    monkeypatch.setattr(brain_mod, "PROMPTS_DIR", tmp_path)
+    brain = FakeBrain(result={"subject": "פרסומת: x", "body": "y"})
+    w = Writer(brain, state, _config(max_sequence_steps=1))
+    w.skills = ""
+    draft = await w._write_personal_email(
+        Prospect(first_name="דפוס הברון", last_name="", title="בעלים", company="דפוס הברון")
+    )
+    assert draft == {"subject": "פרסומת: x", "body": "y"}
+    p = brain.prompts[0]
+    assert "כתוב מייל פרסומת אחד" in p and "- Company: דפוס הברון" in p
+    assert "Under 75 words" not in p
+
+
+async def test_writer_personal_prompt_upstream_text_without_override(state, monkeypatch, tmp_path):
+    from harvey.agents.writer import Writer
+
+    monkeypatch.setattr(brain_mod, "PROMPTS_DIR", tmp_path)
+    brain = FakeBrain(result={"subject": "s", "body": "b"})
+    w = Writer(brain, state, _config())
+    w.skills = ""
+    await w._write_personal_email(Prospect(first_name="A", last_name="B", title="T", company="C"))
+    assert "Under 75 words" in brain.prompts[0]
+
+
+def test_brain_has_prompt(monkeypatch, tmp_path):
+    monkeypatch.setattr(brain_mod, "PROMPTS_DIR", tmp_path)
+    b = Brain.__new__(Brain)
+    assert b.has_prompt("writer_personal") is False
+    (tmp_path / "writer_personal.md").write_text("x", encoding="utf-8")
+    assert b.has_prompt("writer_personal") is True
