@@ -384,7 +384,10 @@ class Sender:
             seen_emails.add(email)
 
             cumulative_days = 0
-            for step in campaign.sequence:
+            # channels.email.max_sequence_steps: never stage more emails per
+            # prospect than the operator allows, whatever the model returned.
+            cap = int(getattr(self.config.channels.email, "max_sequence_steps", 3) or 3)
+            for step in campaign.sequence[:cap]:
                 cumulative_days += max(0, step.delay_days)
                 send_at = now + timedelta(days=cumulative_days)
                 item_id = await self.state.add_outbox_item(

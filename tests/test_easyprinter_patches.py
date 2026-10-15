@@ -159,3 +159,34 @@ def test_brain_has_prompt(monkeypatch, tmp_path):
     assert b.has_prompt("writer_personal") is False
     (tmp_path / "writer_personal.md").write_text("x", encoding="utf-8")
     assert b.has_prompt("writer_personal") is True
+
+
+# ── P3: Sender stages at most max_sequence_steps ──
+
+
+class _FakeProvider:
+    name = "fake"
+
+    def is_configured(self):
+        return True
+
+
+async def test_sender_stages_only_capped_steps(state):
+    from harvey.agents.sender import Sender
+    from harvey.models.campaign import Campaign, EmailStep
+    from harvey.models.company import Company
+
+    cid = await state.add_company(Company(name="דפוס הברון", domain="habaron.co.il", industry="print-shop"))
+    pid = await state.add_prospect(Prospect(
+        company_id=cid, first_name="דפוס הברון", last_name="", title="בעלים",
+        email="shop@habaron.co.il", email_status="risky", status="new",
+        company="דפוס הברון", industry="print-shop",
+    ))
+    seq = [EmailStep(step=i, subject=f"s{i}", body=f"b{i}", delay_days=d) for i, d in ((1, 0), (2, 3), (3, 4))]
+    camp = Campaign(id="c1", name="x", prospect_ids=[pid], sequence=seq, status="draft")
+    await state.add_campaign(camp)
+    s = Sender(FakeBrain(), state, _config(max_sequence_steps=1, send_to_risky=True), EnvConfig())
+    s.provider = _FakeProvider()
+    await s._stage_campaign_native(camp)
+    rows = await state.get_outbox(status="pending_review", limit=50)
+    assert [r["step"] for r in rows if r["prospect_id"] == pid] == [1]
