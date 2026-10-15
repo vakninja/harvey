@@ -213,3 +213,26 @@ def test_osm_tag_map_knows_print_shops():
     assert OpenStreetMap.TAG_MAP["print"] == ['shop=copyshop', 'craft=printer', 'shop=printing']
     osm = OpenStreetMap.__new__(OpenStreetMap)
     assert osm._tags("print shop") == ['shop=copyshop', 'craft=printer', 'shop=printing']
+
+
+# ── P6: Hebrew opt-out phrases are hard matches ──
+
+
+@pytest.mark.parametrize("text", [
+    "נא להסיר אותי מהרשימה",
+    "הסירו אותי",
+    "תפסיקו לשלוח לי מיילים",
+    "לא מעוניין תודה",
+    "אל תשלחו יותר",
+    "הסר",
+])
+def test_hebrew_opt_out_phrases_are_hard_matches(text):
+    from harvey.agents.handler import OPT_OUT_PATTERNS
+
+    assert any(p in text.lower() for p in OPT_OUT_PATTERNS), text
+
+
+def test_hebrew_interest_is_not_an_opt_out():
+    from harvey.agents.handler import OPT_OUT_PATTERNS
+
+    assert not any(p in "כן, אשמח לקבל פרטים" for p in OPT_OUT_PATTERNS)

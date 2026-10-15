@@ -57,6 +57,17 @@ OPT_OUT_PATTERNS = (
     "never contact",
     "delete my info",
     "delete my data",
+    # Hebrew (Israel §30A: any refusal must be honored immediately and permanently)
+    "הסר",          # remove (also inside הסרה)
+    "הסירו",        # remove (plural imperative)
+    "להסיר",        # to remove
+    "תפסיקו",       # stop (plural)
+    "תפסיק",        # stop
+    "לא מעוניין",   # not interested (m.)
+    "לא מעוניינת",  # not interested (f.)
+    "אל תשלחו",     # don't send (plural)
+    "אל תשלח",      # don't send
+    "די לשלוח",     # enough sending
 )
 
 # Phrases that mean a human must take over. Never auto-reply to these.
