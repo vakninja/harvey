@@ -35,7 +35,8 @@ ENV PATH="/home/harvey/.local/bin:${PATH}"
 
 # Claude Code CLI, installed as the runtime user so ~/.local/bin is correct.
 # The build FAILS if the CLI is missing: it is required at runtime.
-RUN curl -fsSL https://claude.ai/install.sh | sh && claude --version
+# (The installer is a bash script; piping it into dash `sh` fails on line 9.)
+RUN curl -fsSL https://claude.ai/install.sh | bash && claude --version
 
 # Healthy = the heartbeat loop has touched the database recently
 # (2h window tolerates long heartbeat intervals and quiet-hour idling).
