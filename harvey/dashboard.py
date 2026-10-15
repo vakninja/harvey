@@ -375,6 +375,81 @@ async def get_company_contacts(company_id: str):
     return rows
 
 
+# ── Import (easyprinter fork) ──
+#
+# External prospectors (the marketing stack's Serper+scrape pipeline) push
+# businesses here instead of running Scout. One prospect per business: the
+# business name is the first name, the title is the owner role.
+
+@app.post("/api/import/prospects")
+async def import_prospects(request: Request):
+    from harvey.models.company import Company
+    from harvey.models.prospect import Prospect
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = None
+    items = data.get("prospects") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return JSONResponse(
+            {"success": False, "message": 'body must be {"prospects": [...]}'}, status_code=400,
+        )
+
+    state = _state()
+    await state.init_db()
+    inserted = existing = 0
+    results, errors = [], []
+    for i, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            errors.append({"index": i, "error": "not an object"})
+            continue
+        email = str(raw.get("email") or "").strip().lower()
+        if not email or "@" not in email:
+            errors.append({"index": i, "error": "email required"})
+            continue
+        name = str(raw.get("company") or "").strip() or email.split("@")[-1]
+        notes = str(raw.get("notes") or "").strip()
+        company = Company(
+            name=name,
+            domain=str(raw.get("domain") or "").strip(),
+            website=str(raw.get("website") or "").strip(),
+            industry=str(raw.get("industry") or "print-shop").strip(),
+            location=str(raw.get("city") or "").strip(),
+            phone=str(raw.get("phone") or "").strip(),
+            source="import",
+            external_id=str(raw.get("external_id") or "").strip(),
+            notes=notes,
+        )
+        try:
+            company_id = await state.add_company(company)
+            prospect = Prospect(
+                id=uuid.uuid4().hex,
+                company_id=company_id,
+                first_name=name,
+                last_name="",
+                email=email,
+                email_status=str(raw.get("email_status") or "risky").strip() or "risky",
+                phone=company.phone,
+                title=str(raw.get("title") or "בעלים").strip(),
+                source="import",
+                status="new",
+                personalization_notes=notes,
+                company=name,
+                industry=company.industry,
+            )
+            fresh_id = prospect.id
+            pid = await state.add_prospect(prospect)
+            created = (pid == fresh_id)
+        except Exception as e:
+            errors.append({"index": i, "error": str(e)})
+            continue
+        inserted += int(created)
+        existing += int(not created)
+        results.append({"email": email, "prospect_id": pid, "company_id": company_id, "created": created})
+    return {"inserted": inserted, "existing": existing, "results": results, "errors": errors}
+
+
 # ── Feedback ──
 
 

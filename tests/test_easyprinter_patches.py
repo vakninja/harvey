@@ -236,3 +236,48 @@ def test_hebrew_interest_is_not_an_opt_out():
     from harvey.agents.handler import OPT_OUT_PATTERNS
 
     assert not any(p in "כן, אשמח לקבל פרטים" for p in OPT_OUT_PATTERNS)
+
+
+# ── P7: POST /api/import/prospects ──
+
+
+async def test_import_prospects_route(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    import harvey.dashboard as dash
+
+    monkeypatch.setattr(dash, "DB_PATH", tmp_path / "h.db")
+    c = TestClient(dash.app)
+    body = {"prospects": [
+        {"company": "דפוס הברון", "website": "https://habaron.co.il", "domain": "habaron.co.il",
+         "email": "Info@Habaron.co.il", "email_status": "risky", "phone": "054-1", "city": "זכרון יעקב",
+         "industry": "print-shop", "notes": "בית דפוס ותיק"},
+        {"company": "דפוס ללא אתר", "email": "shop@gmail.com", "external_id": "serper:cid123"},
+        {"company": "no email"},
+    ]}
+    r = c.post("/api/import/prospects", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["inserted"] == 2 and data["existing"] == 0
+    assert data["errors"] == [{"index": 2, "error": "email required"}]
+    st = StateManager(str(tmp_path / "h.db"))
+    await st.init_db()
+    new = await st.get_prospects_by_status("new")
+    assert sorted(p.email for p in new) == ["info@habaron.co.il", "shop@gmail.com"]
+    p = next(p for p in new if p.email == "info@habaron.co.il")
+    assert p.first_name == "דפוס הברון" and p.title == "בעלים" and p.industry == "print-shop"
+    assert p.email_status == "risky" and p.personalization_notes == "בית דפוס ותיק"
+    comp = await st.get_company(p.company_id)
+    assert comp.domain == "habaron.co.il" and comp.location == "זכרון יעקב" and comp.phone == "054-1"
+    # idempotent re-import
+    r2 = c.post("/api/import/prospects", json=body)
+    assert r2.json()["inserted"] == 0 and r2.json()["existing"] == 2
+    assert len(await st.get_prospects_by_status("new")) == 2
+
+
+def test_import_prospects_rejects_bad_body(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    import harvey.dashboard as dash
+
+    monkeypatch.setattr(dash, "DB_PATH", tmp_path / "h.db")
+    c = TestClient(dash.app)
+    assert c.post("/api/import/prospects", json={"nope": 1}).status_code == 400
