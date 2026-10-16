@@ -854,11 +854,15 @@ class StateManager:
         due_before: str | None = None,
         limit: int = 200,
         exclude_kind: str | None = None,
+        prospect_id: str | None = None,
     ) -> list[dict]:
         where, params = [], []
         if status:
             where.append("status = ?")
             params.append(status)
+        if prospect_id:
+            where.append("prospect_id = ?")
+            params.append(prospect_id)
         if due_before:
             where.append("(send_at IS NULL OR send_at <= ?)")
             params.append(due_before)

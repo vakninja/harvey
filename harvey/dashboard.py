@@ -10,6 +10,7 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import aiosqlite
 import yaml
@@ -410,10 +411,24 @@ async def import_prospects(request: Request):
             continue
         name = str(raw.get("company") or "").strip() or email.split("@")[-1]
         notes = str(raw.get("notes") or "").strip()
+        # A shop already known by email is reported as existing without touching companies,
+        # so re-imports (and other spellings of the same shop) never leave orphan company rows.
+        known = await state.get_prospect_by_email(email)
+        if known:
+            existing += 1
+            results.append({"email": email, "prospect_id": known.id, "company_id": known.company_id, "created": False})
+            continue
+        website = str(raw.get("website") or "").strip()
+        domain = str(raw.get("domain") or "").strip().lower()
+        if not domain and website:
+            # Companies dedupe on domain; derive it from the website so a website-only import
+            # of the same shop resolves to the same row.
+            netloc = urlparse(website if "://" in website else f"https://{website}").netloc.lower()
+            domain = netloc.split("@")[-1].split(":")[0].removeprefix("www.")
         company = Company(
             name=name,
-            domain=str(raw.get("domain") or "").strip(),
-            website=str(raw.get("website") or "").strip(),
+            domain=domain,
+            website=website,
             industry=str(raw.get("industry") or "print-shop").strip(),
             location=str(raw.get("city") or "").strip(),
             phone=str(raw.get("phone") or "").strip(),

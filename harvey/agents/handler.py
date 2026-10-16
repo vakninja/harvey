@@ -58,42 +58,61 @@ OPT_OUT_PATTERNS = (
     "never contact",
     "delete my info",
     "delete my data",
-    # Hebrew (Israel §30A: any refusal must be honored immediately and permanently)
-    "הסר",          # remove (also inside הסרה)
-    "הסירו",        # remove (plural imperative)
-    "להסיר",        # to remove
-    "תפסיקו",       # stop (plural)
-    "תפסיק",        # stop
-    "לא מעוניין",   # not interested (m.)
-    "לא מעוניינת",  # not interested (f.)
-    "אל תשלחו",     # don't send (plural)
-    "אל תשלח",      # don't send
-    "די לשלוח",     # enough sending
 )
 
-# Easy Printer (P11): mail clients quote OUR email under the reply, and ours carries the
-# decline instruction ("השיבו 'הסר'", "לא מעוניינים"). Only the prospect's own words may be
-# classified, so everything from the first quote marker on is dropped. Markers cover Gmail
-# (English and Hebrew attribution lines, which may wrap and carry bidi controls), "> " lines,
-# Outlook's "-----Original Message-----" / "-----הודעה מקורית-----", and Outlook header blocks.
+# Easy Printer (P6): Hebrew opt-outs (Israel §30A: any refusal is honored immediately and
+# permanently). Matched on word boundaries with an optional one-letter prefix (ו/ש/ב/ל), because
+# the bare substring "הסר" also sits inside everyday words such as הסרטון (the video) and
+# הסריקה (the scan), and a false opt-out silently loses a lead.
+_HEBREW_OPT_OUT_RE = re.compile(
+    r"(?<![א-ת])[ושבל]?(?:"
+    r"הסר|הסרה|הסרת|הסירו|להסיר|להסרה|תסירו|תסיר"        # remove (imperatives, infinitives)
+    r"|תפסיקו|תפסיק|די לשלוח|אל תשלחו|אל תשלח"              # stop sending
+    r"|לא מעוניין|לא מעוניינת|לא מעוניינים|לא מעונין"      # not interested
+    r")(?![א-ת])"
+)
+
+
+def is_hard_opt_out(text: str) -> bool:
+    """True when the prospect's own words refuse further contact. Checked before any model call."""
+    lower = text.lower()
+    return any(p in lower for p in OPT_OUT_PATTERNS) or bool(_HEBREW_OPT_OUT_RE.search(text))
+
+# Easy Printer (P11): mail clients quote OUR email under (or around) the reply, and ours carries
+# the decline instruction ("השיבו 'הסר'", "לא מעוניינים"). Only the prospect's own words may be
+# classified. Quoted material is removed, not truncated, so bottom-posted and interleaved
+# replies survive: Outlook-style separators and header blocks end the message; attribution
+# lines (Gmail English/Hebrew, which may wrap and carry bidi controls, and "<name> כתב:") and
+# "> " lines are dropped; and any line we ourselves sent this prospect is dropped even when the
+# client quotes it without any marker.
 _BIDI = "‎‏‪-‮⁦-⁩"
-_QUOTE_MARKERS = (
-    re.compile(r"(?m)^[ \t" + _BIDI + r"]*>"),
-    re.compile(r"(?s)(?:^|\n)[ \t" + _BIDI + r"]*On\s.{0,400}?wrote:"),
-    re.compile(r"(?s)(?:^|\n)[ \t" + _BIDI + r"]*בתאריך\s.{0,400}?(?:כתב/ה|כתבה|כתב|מאת)\b.{0,300}?:[ \t" + _BIDI + r"]*(?:\n|$)"),
-    re.compile(r"(?m)^[ \t" + _BIDI + r"]*-{2,}\s*(?:Original Message|הודעה מקורית|Forwarded message|הודעה שהועברה)\s*-{2,}"),
-    re.compile(r"(?m)^[ \t" + _BIDI + r"]*(?:From|מאת):[^\n]*\n[ \t" + _BIDI + r"]*(?:Sent|Date|נשלח|תאריך):"),
+_WS = r"[ \t" + _BIDI + r"]*"
+_TRUNCATE_AT = (
+    re.compile(r"(?m)^" + _WS + r"-{2,}\s*(?:Original Message|הודעה מקורית|Forwarded message|הודעה שהועברה)\s*-{2,}"),
+    re.compile(r"(?m)^" + _WS + r"(?:From|מאת):[^\n]*\n" + _WS + r"(?:Sent|Date|נשלח|תאריך):"),
 )
+_ATTRIBUTION = (
+    re.compile(r"(?s)(?:^|\n)" + _WS + r"On\s.{0,400}?wrote:" + _WS + r"(?=\n|$)"),
+    re.compile(r"(?s)(?:^|\n)" + _WS + r"בתאריך\s.{0,400}?(?:כתב/ה|כתבה|כתב|מאת)\b.{0,300}?:" + _WS + r"(?=\n|$)"),
+    re.compile(r"(?m)^" + _WS + r"[^\n>]{0,120}?(?:כתב/ה|כתבה|כתב|wrote):" + _WS + r"$"),
+)
+_QUOTED_LINE = re.compile(r"(?m)^" + _WS + r">[^\n]*(?:\n|$)")
+_MIN_OWN_LINE = 12  # shorter sent lines ("שלום,") are too generic to treat as ours
 
 
-def strip_quoted_reply(text: str) -> str:
-    """Return only the prospect's own words: cut at the first quoted-mail marker."""
-    cut = len(text)
-    for marker in _QUOTE_MARKERS:
+def strip_quoted_reply(text: str, sent_bodies=()) -> str:
+    """Return only the prospect's own words, wherever they sit in the message."""
+    for marker in _TRUNCATE_AT:
         m = marker.search(text)
-        if m and m.start() < cut:
-            cut = m.start()
-    return text[:cut].strip()
+        if m:
+            text = text[:m.start()]
+    for marker in _ATTRIBUTION:
+        text = marker.sub("\n", text)
+    text = _QUOTED_LINE.sub("", text)
+    ours = {line.strip() for body in sent_bodies for line in body.splitlines() if len(line.strip()) >= _MIN_OWN_LINE}
+    if ours:
+        text = "\n".join(line for line in text.splitlines() if line.strip() not in ours)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 # Phrases that mean a human must take over. Never auto-reply to these.
@@ -239,16 +258,18 @@ class Handler:
         reply_meta: dict | None = None,
     ):
         """Classify, record, and respond to a single reply."""
-        # Easy Printer (P11): classify the prospect's words only, never the quoted copy of ours.
-        reply_text = strip_quoted_reply(reply_text)
-        if not reply_text:
-            logger.info(f"Handler: reply from {lead_email} contains only quoted text; nothing to classify.")
-            return
-
         # Find the prospect by email (indexed lookup)
         prospect = await self.state.get_prospect_by_email(lead_email)
         if not prospect:
             logger.warning(f"Handler: No prospect found for {lead_email}")
+            return
+
+        # Easy Printer (P11): classify the prospect's own words only, never the quoted copy of
+        # ours. Lines we sent them are dropped even when the client quotes without markers.
+        sent = await self.state.get_outbox(status="sent", prospect_id=prospect.id, limit=50)
+        reply_text = strip_quoted_reply(reply_text, [o.get("body") or "" for o in sent])
+        if not reply_text:
+            logger.info(f"Handler: reply from {lead_email} contains only quoted text; nothing to classify.")
             return
 
         # Update prospect status + stop-on-reply: a human answered, so every
@@ -267,7 +288,7 @@ class Handler:
         # 1. Classify intent. Hard keyword checks run FIRST and override
         # the LLM — opt-outs and legal threats must never be missed.
         text_lower = reply_text.lower()
-        if any(p in text_lower for p in OPT_OUT_PATTERNS):
+        if is_hard_opt_out(reply_text):
             intent = "unsubscribe"
         elif any(p in text_lower for p in ESCALATION_PATTERNS):
             intent = "escalate"

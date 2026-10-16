@@ -228,15 +228,15 @@ def test_osm_tag_map_knows_print_shops():
     "הסר",
 ])
 def test_hebrew_opt_out_phrases_are_hard_matches(text):
-    from harvey.agents.handler import OPT_OUT_PATTERNS
+    from harvey.agents.handler import is_hard_opt_out
 
-    assert any(p in text.lower() for p in OPT_OUT_PATTERNS), text
+    assert is_hard_opt_out(text), text
 
 
 def test_hebrew_interest_is_not_an_opt_out():
-    from harvey.agents.handler import OPT_OUT_PATTERNS
+    from harvey.agents.handler import is_hard_opt_out
 
-    assert not any(p in "כן, אשמח לקבל פרטים" for p in OPT_OUT_PATTERNS)
+    assert not is_hard_opt_out("כן, אשמח לקבל פרטים")
 
 
 # ── P7: POST /api/import/prospects ──
@@ -377,3 +377,104 @@ async def test_handler_ignores_opt_out_words_inside_quoted_text():
         )]
         await make_handler(st, provider, intent="interested")._run_native()
         assert (await st.get_prospect(pid)).status == "replied"
+
+
+# ── Final-review fixes ──
+
+# F2: Hebrew opt-out words are matched on word boundaries. "הסר" inside הסרטון (the video),
+# הסריקה (the scan) or הסרגל (the ruler) is ordinary print-shop talk, not an opt-out.
+@pytest.mark.parametrize("text", [
+    "ראיתי את הסרטון, אשמח לקבל פרטים",
+    "כן, מעניין אותי במיוחד הסריקה והפורטל",
+    "אין לי צורך בהסרגל",
+    "מתי אפשר לדבר?",
+])
+def test_hebrew_words_that_merely_contain_opt_out_letters_are_not_opt_outs(text):
+    from harvey.agents.handler import is_hard_opt_out
+
+    assert not is_hard_opt_out(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "להסרה", "תודה, הסר.", "בבקשה להסיר אותי", "ולהסיר", "לא מעוניינים", "unsubscribe me", "REMOVE ME please",
+])
+def test_is_hard_opt_out_positive_cases(text):
+    from harvey.agents.handler import is_hard_opt_out
+
+    assert is_hard_opt_out(text), text
+
+
+# F3: quote stripping keeps the prospect's own lines wherever they are (bottom-posted,
+# interleaved) and drops our own sent lines even when the client quotes without markers.
+SENT_BODY = ("דפוס בדיקה שלום,\nאני עמית, בעל דפוס הברון בזכרון יעקב.\nהאם תרצו לקבל פרטים?\n"
+             "אם לא מעוניינים, השיבו 'הסר' ולא נפנה שוב.\nעמית ועקנין, דפוס הברון, 054-3054778, easyprinter.co.il")
+
+
+@pytest.mark.parametrize("raw,sent,expected", [
+    ("> דפוס בדיקה שלום,\n> אם לא מעוניינים, השיבו 'הסר' ולא נפנה שוב.\n\nהסר בבקשה", (), "הסר בבקשה"),
+    ("> האם תרצו לקבל פרטים?\nכן בהחלט\n> אם לא מעוניינים, השיבו 'הסר'", (), "כן בהחלט"),
+    ("תודה\n\nעמית ועקנין כתב:\n" + SENT_BODY, (SENT_BODY,), "תודה"),
+    ("לא, תודה\n\n" + SENT_BODY, (SENT_BODY,), "לא, תודה"),
+])
+def test_strip_quoted_reply_keeps_the_prospects_own_lines(raw, sent, expected):
+    from harvey.agents.handler import strip_quoted_reply
+
+    assert strip_quoted_reply(raw, sent) == expected
+
+
+async def test_handler_honors_bottom_posted_opt_out():
+    from harvey.integrations.mail_provider import InboundMessage
+    from tests.test_outbox_native import FakeProvider, make_handler, seed_prospect
+
+    with tempfile.TemporaryDirectory() as d:
+        st = StateManager(os.path.join(d, "t.db"))
+        await st.init_db()
+        pid = await seed_prospect(st, status="contacted")
+        provider = FakeProvider()
+        provider.inbound = [InboundMessage(
+            provider_id="b1", from_email="jane@acme.com", subject="Re: פרסומת",
+            body="> דפוס בדיקה שלום,\n> אם לא מעוניינים, השיבו 'הסר' ולא נפנה שוב.\n\nהסר בבקשה",
+        )]
+        await make_handler(st, provider, intent="interested")._run_native()
+        assert (await st.get_prospect(pid)).status == "opted_out"
+
+
+async def test_handler_drops_our_sent_body_quoted_without_markers():
+    from datetime import datetime, timezone
+    from harvey.integrations.mail_provider import InboundMessage
+    from tests.test_outbox_native import FakeProvider, make_handler, seed_prospect
+
+    with tempfile.TemporaryDirectory() as d:
+        st = StateManager(os.path.join(d, "t.db"))
+        await st.init_db()
+        pid = await seed_prospect(st, status="contacted")
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        await st.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="פרסומת: בדיקה",
+                                 body=SENT_BODY, send_at=now, status="sent", campaign_id="c1", step=1)
+        provider = FakeProvider()
+        provider.inbound = [InboundMessage(
+            provider_id="w1", from_email="jane@acme.com", subject="Re: פרסומת",
+            body="תודה\n\nעמית ועקנין כתב:\n" + SENT_BODY,
+        )]
+        await make_handler(st, provider, intent="interested")._run_native()
+        assert (await st.get_prospect(pid)).status == "replied"
+
+
+# F4: importing the same shop by website (no domain, no external_id) twice, or the same email
+# under another spelling of the company name, must not add company rows.
+async def test_import_by_website_only_does_not_duplicate_companies(monkeypatch, tmp_path):
+    import sqlite3
+    from fastapi.testclient import TestClient
+    import harvey.dashboard as dash
+
+    db = tmp_path / "h.db"
+    monkeypatch.setattr(dash, "DB_PATH", db)
+    c = TestClient(dash.app)
+    body = {"prospects": [{"company": "דפוס א", "website": "https://www.dfus-a.co.il/contact", "email": "info@dfus-a.co.il"}]}
+    r1 = c.post("/api/import/prospects", json=body).json()
+    r2 = c.post("/api/import/prospects", json=body).json()
+    r3 = c.post("/api/import/prospects", json={"prospects": [{"company": "דפוס א בע\"מ", "email": "Info@dfus-a.co.il"}]}).json()
+    assert (r1["inserted"], r2["existing"], r3["existing"]) == (1, 1, 1)
+    con = sqlite3.connect(db)
+    assert con.execute("select count(*) from companies").fetchone()[0] == 1
+    assert con.execute("select domain from companies").fetchone()[0] == "dfus-a.co.il"
