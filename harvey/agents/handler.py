@@ -8,6 +8,7 @@ sending domain while nobody's watching.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 
 from harvey.brain import Brain, BrainUnavailable
@@ -69,6 +70,31 @@ OPT_OUT_PATTERNS = (
     "אל תשלח",      # don't send
     "די לשלוח",     # enough sending
 )
+
+# Easy Printer (P11): mail clients quote OUR email under the reply, and ours carries the
+# decline instruction ("השיבו 'הסר'", "לא מעוניינים"). Only the prospect's own words may be
+# classified, so everything from the first quote marker on is dropped. Markers cover Gmail
+# (English and Hebrew attribution lines, which may wrap and carry bidi controls), "> " lines,
+# Outlook's "-----Original Message-----" / "-----הודעה מקורית-----", and Outlook header blocks.
+_BIDI = "‎‏‪-‮⁦-⁩"
+_QUOTE_MARKERS = (
+    re.compile(r"(?m)^[ \t" + _BIDI + r"]*>"),
+    re.compile(r"(?s)(?:^|\n)[ \t" + _BIDI + r"]*On\s.{0,400}?wrote:"),
+    re.compile(r"(?s)(?:^|\n)[ \t" + _BIDI + r"]*בתאריך\s.{0,400}?(?:כתב/ה|כתבה|כתב|מאת)\b.{0,300}?:[ \t" + _BIDI + r"]*(?:\n|$)"),
+    re.compile(r"(?m)^[ \t" + _BIDI + r"]*-{2,}\s*(?:Original Message|הודעה מקורית|Forwarded message|הודעה שהועברה)\s*-{2,}"),
+    re.compile(r"(?m)^[ \t" + _BIDI + r"]*(?:From|מאת):[^\n]*\n[ \t" + _BIDI + r"]*(?:Sent|Date|נשלח|תאריך):"),
+)
+
+
+def strip_quoted_reply(text: str) -> str:
+    """Return only the prospect's own words: cut at the first quoted-mail marker."""
+    cut = len(text)
+    for marker in _QUOTE_MARKERS:
+        m = marker.search(text)
+        if m and m.start() < cut:
+            cut = m.start()
+    return text[:cut].strip()
+
 
 # Phrases that mean a human must take over. Never auto-reply to these.
 ESCALATION_PATTERNS = (
@@ -213,6 +239,12 @@ class Handler:
         reply_meta: dict | None = None,
     ):
         """Classify, record, and respond to a single reply."""
+        # Easy Printer (P11): classify the prospect's words only, never the quoted copy of ours.
+        reply_text = strip_quoted_reply(reply_text)
+        if not reply_text:
+            logger.info(f"Handler: reply from {lead_email} contains only quoted text; nothing to classify.")
+            return
+
         # Find the prospect by email (indexed lookup)
         prospect = await self.state.get_prospect_by_email(lead_email)
         if not prospect:

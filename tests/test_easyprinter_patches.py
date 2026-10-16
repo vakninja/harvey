@@ -333,3 +333,47 @@ async def test_handler_honors_subject_only_opt_out(subject):
         )]
         await make_handler(st, provider)._run_native()
         assert (await st.get_prospect(pid)).status == "opted_out"
+
+
+# ── P11: the mail client's quoted copy of OUR email must never be classified ──
+# Gmail quotes the original under the reply; ours contains "השיבו 'הסר'" and "לא מעוניינים",
+# so without stripping, every ordinary reply is a hard opt-out.
+
+GMAIL_EN = ("כן\n\n‪On Fri, Oct 16, 2026 at 11:00 AM ‫עמית ועקנין‬‎ <outreach@easyprinter.co.il>\n"
+            "wrote:‬\n\n> דפוס בדיקה שלום,\n> אם לא מעוניינים, השיבו 'הסר' ולא נפנה שוב.\n>\n")
+GMAIL_HE = ("כן, אשמח\n\n‏בתאריך יום ו׳, 16 באוק׳ 2026 ב-11:00 מאת ‫עמית ועקנין‬‎ "
+            "<outreach@easyprinter.co.il>:\n\n> אם לא מעוניינים, השיבו 'הסר'\n")
+OUTLOOK_EN = ("מעניין, תתקשרו\n\n-----Original Message-----\nFrom: עמית <outreach@easyprinter.co.il>\n"
+              "Sent: Friday\n\nאם לא מעוניינים, השיבו 'הסר'")
+OUTLOOK_HE = ("מעניין\n\nמאת: עמית ועקנין <outreach@easyprinter.co.il>\nנשלח: יום שישי 16 אוקטובר 2026 11:00\n"
+              "אל: דפוס בדיקה\nנושא: RE: פרסומת\n\nאם לא מעוניינים, השיבו 'הסר'")
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (GMAIL_EN, "כן"),
+    (GMAIL_HE, "כן, אשמח"),
+    (OUTLOOK_EN, "מעניין, תתקשרו"),
+    (OUTLOOK_HE, "מעניין"),
+    ("לא מעוניין, תודה", "לא מעוניין, תודה"),
+    ("> רק ציטוט\n> השיבו 'הסר'", ""),
+])
+def test_strip_quoted_reply(raw, expected):
+    from harvey.agents.handler import strip_quoted_reply
+
+    assert strip_quoted_reply(raw) == expected
+
+
+async def test_handler_ignores_opt_out_words_inside_quoted_text():
+    from harvey.integrations.mail_provider import InboundMessage
+    from tests.test_outbox_native import FakeProvider, make_handler, seed_prospect
+
+    with tempfile.TemporaryDirectory() as d:
+        st = StateManager(os.path.join(d, "t.db"))
+        await st.init_db()
+        pid = await seed_prospect(st, status="contacted")
+        provider = FakeProvider()
+        provider.inbound = [InboundMessage(
+            provider_id="q1", from_email="jane@acme.com", subject="Re: פרסומת", body=GMAIL_EN,
+        )]
+        await make_handler(st, provider, intent="interested")._run_native()
+        assert (await st.get_prospect(pid)).status == "replied"
