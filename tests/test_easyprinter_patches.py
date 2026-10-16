@@ -4,6 +4,7 @@ See the marketing repo: docs/superpowers/plans/2026-10-16-phase1a-harvey-engine.
 """
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -281,3 +282,12 @@ def test_import_prospects_rejects_bad_body(monkeypatch, tmp_path):
     monkeypatch.setattr(dash, "DB_PATH", tmp_path / "h.db")
     c = TestClient(dash.app)
     assert c.post("/api/import/prospects", json={"nope": 1}).status_code == 400
+
+
+# P9: the dashboard must lay out right-to-left text (Hebrew drafts, replies, names)
+# by the text's own direction instead of forcing left-to-right.
+def test_dashboard_css_follows_text_direction():
+    css = (Path(__file__).resolve().parent.parent / "harvey" / "web" / "app.css").read_text(encoding="utf-8")
+    assert "unicode-bidi: plaintext" in css
+    for cls in (".desk-pane .body", ".desk-pane .subject", ".email-step .body", ".desk-item .sub"):
+        assert cls in css.split("unicode-bidi: plaintext")[0].rsplit("}", 1)[-1], f"{cls} must opt into direction-aware layout"

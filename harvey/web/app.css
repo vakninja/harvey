@@ -583,3 +583,10 @@ details[open] summary::before { content: '– '; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
+
+/* Easy Printer: direction-aware text. Hebrew drafts, replies, names and notes are laid out by
+   their own first strong character (like dir="auto") instead of being forced left-to-right. */
+.desk-pane .subject, .desk-pane .body, .desk-item .to, .desk-item .sub,
+.email-step .subject, .email-step .body, .text, .qtext, td {
+  unicode-bidi: plaintext; text-align: start;
+}
