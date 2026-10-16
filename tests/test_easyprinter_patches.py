@@ -478,3 +478,25 @@ async def test_import_by_website_only_does_not_duplicate_companies(monkeypatch, 
     con = sqlite3.connect(db)
     assert con.execute("select count(*) from companies").fetchone()[0] == 1
     assert con.execute("select domain from companies").fetchone()[0] == "dfus-a.co.il"
+
+
+# ── P12: GET /api/sync — rows changed since a timestamp, no dashboard LIMITs ──
+
+async def test_sync_route_returns_rows_since(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    import harvey.dashboard as dash
+
+    monkeypatch.setattr(dash, "DB_PATH", tmp_path / "h.db")
+    c = TestClient(dash.app)
+    body = {"prospects": [{"company": f"דפוס {i}", "email": f"shop{i}@example.co.il"} for i in range(250)]}
+    assert c.post("/api/import/prospects", json=body).json()["inserted"] == 250
+
+    full = c.get("/api/sync").json()
+    assert len(full["prospects"]) == 250 and len(full["companies"]) == 250
+    assert full["outbox"] == [] and full["conversations"] == []
+    assert full["now"] >= full["prospects"][-1]["updated_at"] >= full["prospects"][0]["updated_at"]
+    assert full["now"] >= full["companies"][-1]["updated_at"]
+
+    later = c.get("/api/sync", params={"since": full["now"]}).json()
+    assert later["prospects"] == [] and later["companies"] == []
+    assert later["since"] == full["now"]

@@ -779,6 +779,39 @@ async def get_prospects():
     return rows
 
 
+@app.get("/api/sync")
+async def get_sync(since: str = "", limit: int = 5000):
+    """Easy Printer (P12): rows changed since `since` (naive UTC ISO) for the marketing mirror.
+
+    The dashboard lists are capped (LIMIT 200/100/25) so they cannot drive a sync; this
+    returns every row in the window, oldest first, up to `limit` per table.
+    """
+    limit = max(1, min(int(limit), 20000))
+    # Same format StateManager writes (model datetime.isoformat(), naive UTC), so string order is time order.
+    now = datetime.utcnow().isoformat()
+    floor = since or "1970-01-01T00:00:00"
+
+    async def rows(table: str):
+        return await query_db(
+            f"SELECT * FROM {table} WHERE updated_at >= ? ORDER BY updated_at ASC LIMIT ?", (floor, limit)
+        )
+
+    conversations = await rows("conversations")
+    for row in conversations:
+        try:
+            row["thread"] = json.loads(row.get("thread_json") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            row["thread"] = []
+    return {
+        "since": since,
+        "now": now,
+        "companies": await rows("companies"),
+        "prospects": await rows("prospects"),
+        "outbox": await rows("outbox"),
+        "conversations": conversations,
+    }
+
+
 def _state():
     from harvey.state import StateManager
     return StateManager(db_path=str(DB_PATH))
