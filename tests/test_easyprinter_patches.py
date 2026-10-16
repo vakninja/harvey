@@ -500,3 +500,27 @@ async def test_sync_route_returns_rows_since(monkeypatch, tmp_path):
     later = c.get("/api/sync", params={"since": full["now"]}).json()
     assert later["prospects"] == [] and later["companies"] == []
     assert later["since"] == full["now"]
+
+
+async def test_sync_returns_outbox_rows_created_after_cursor(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    import harvey.dashboard as dash
+
+    db = tmp_path / "h.db"
+    monkeypatch.setattr(dash, "DB_PATH", db)
+    c = TestClient(dash.app)
+    body = {"prospects": [{"company": "דפוס אחד", "email": "one@example.co.il"}]}
+    assert c.post("/api/import/prospects", json=body).json()["inserted"] == 1
+    first = c.get("/api/sync").json()
+    pid = first["prospects"][0]["id"]
+
+    st = StateManager(str(db))
+    item_id = await st.add_outbox_item(
+        prospect_id=pid, to_email="one@example.co.il", subject="פרסומת: בדיקה", body="x",
+        send_at="2026-10-16T12:00:00", status="pending_review", campaign_id="c1", step=1,
+    )
+    assert item_id
+    later = c.get("/api/sync", params={"since": first["now"]}).json()
+    assert [o["id"] for o in later["outbox"]] == [item_id]
+    assert "T" in later["outbox"][0]["updated_at"]
+    assert "T" in later["outbox"][0]["created_at"]

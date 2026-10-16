@@ -787,13 +787,13 @@ async def get_sync(since: str = "", limit: int = 5000):
     returns every row in the window, oldest first, up to `limit` per table.
     """
     limit = max(1, min(int(limit), 20000))
-    # Same format StateManager writes (model datetime.isoformat(), naive UTC), so string order is time order.
+    # strftime(..%f) normalises both 'T' ISO and SQLite's CURRENT_TIMESTAMP ('space') forms, so compare as times.
     now = datetime.utcnow().isoformat()
     floor = since or "1970-01-01T00:00:00"
 
     async def rows(table: str):
         return await query_db(
-            f"SELECT * FROM {table} WHERE updated_at >= ? ORDER BY updated_at ASC LIMIT ?", (floor, limit)
+            f"SELECT * FROM {table} WHERE strftime('%Y-%m-%d %H:%M:%f', updated_at) >= strftime('%Y-%m-%d %H:%M:%f', ?) ORDER BY strftime('%Y-%m-%d %H:%M:%f', updated_at) ASC LIMIT ?", (floor, limit)
         )
 
     conversations = await rows("conversations")
