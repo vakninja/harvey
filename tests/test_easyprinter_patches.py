@@ -291,3 +291,45 @@ def test_dashboard_css_follows_text_direction():
     assert "unicode-bidi: plaintext" in css
     for cls in (".desk-pane .body", ".desk-pane .subject", ".email-step .body", ".desk-item .sub"):
         assert cls in css.split("unicode-bidi: plaintext")[0].rsplit("}", 1)[-1], f"{cls} must opt into direction-aware layout"
+
+
+# ── P10: List-Unsubscribe header, and opt-outs that arrive as a subject with no body ──
+# Gmail's own "Unsubscribe" button sends the mailto with the subject only; the handler
+# must honor that instead of skipping body-less mail.
+
+
+async def test_smtp_send_adds_list_unsubscribe_header(monkeypatch):
+    from types import SimpleNamespace
+    import harvey.integrations.smtp_mail as sm
+
+    captured = {}
+
+    async def fake_send(msg, **kwargs):
+        captured["msg"] = msg
+
+    monkeypatch.setattr(sm.aiosmtplib, "send", fake_send)
+    cfg = _config()
+    cfg.persona.email = "outreach@easyprinter.co.il"
+    env = SimpleNamespace(smtp_host="h", smtp_port=587, smtp_username="outreach@easyprinter.co.il",
+                          smtp_password="p", imap_host="", imap_port=993, imap_username="", imap_password="")
+    provider = sm.SmtpImapProvider(cfg, env)
+    res = await provider.send_email("x@y.co.il", "פרסומת: בדיקה", "גוף")
+    assert res.ok
+    assert captured["msg"]["List-Unsubscribe"] == "<mailto:outreach@easyprinter.co.il?subject=unsubscribe>"
+
+
+@pytest.mark.parametrize("subject", ["unsubscribe", "הסר"])
+async def test_handler_honors_subject_only_opt_out(subject):
+    from harvey.integrations.mail_provider import InboundMessage
+    from tests.test_outbox_native import FakeProvider, make_handler, seed_prospect
+
+    with tempfile.TemporaryDirectory() as d:
+        st = StateManager(os.path.join(d, "t.db"))
+        await st.init_db()
+        pid = await seed_prospect(st, status="contacted")
+        provider = FakeProvider()
+        provider.inbound = [InboundMessage(
+            provider_id="u1", from_email="jane@acme.com", subject=subject, body="",
+        )]
+        await make_handler(st, provider)._run_native()
+        assert (await st.get_prospect(pid)).status == "opted_out"

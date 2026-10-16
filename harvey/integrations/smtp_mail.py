@@ -69,6 +69,10 @@ class SmtpImapProvider(MailProvider):
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to
         msg.set_content(body)
+        # Easy Printer (P10): mailbox providers rank mail carrying an unsubscribe header better
+        # and show their own "Unsubscribe" button, which mails us with subject "unsubscribe"
+        # (a hard opt-out in the Handler).
+        msg["List-Unsubscribe"] = f"<mailto:{persona.email or self.smtp_user}?subject=unsubscribe>"
 
         try:
             await aiosmtplib.send(

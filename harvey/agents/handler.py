@@ -401,10 +401,12 @@ class Handler:
             try:
                 if msg.is_bounce:
                     await self._handle_bounce(msg)
-                elif msg.body.strip():
+                elif msg.body.strip() or msg.subject.strip():
+                    # Easy Printer (P10): an unsubscribe sent from a mail client's own button
+                    # has a subject and no body; fall back to the subject so it is honored.
                     await self._process_reply(
                         msg.from_email,
-                        msg.body.strip(),
+                        msg.body.strip() or msg.subject.strip(),
                         reply_uuid="",
                         reply_meta={
                             "thread_ref": msg.thread_ref,
