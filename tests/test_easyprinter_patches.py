@@ -524,3 +524,38 @@ async def test_sync_returns_outbox_rows_created_after_cursor(monkeypatch, tmp_pa
     assert [o["id"] for o in later["outbox"]] == [item_id]
     assert "T" in later["outbox"][0]["updated_at"]
     assert "T" in later["outbox"][0]["created_at"]
+
+
+# ── P13: reject acts only on items that have not gone out (pending or approved-but-unsent) ──
+
+async def test_reject_route_only_rejects_pending_items(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    import harvey.dashboard as dash
+
+    db_path = tmp_path / "h.db"
+    monkeypatch.setattr(dash, "DB_PATH", db_path)
+    st = StateManager(str(db_path))
+    await st.init_db()
+    sent = await st.add_outbox_item(prospect_id="p1", to_email="a@x.co.il", subject="s", body="b",
+                                    send_at="2026-10-16T08:00:00", status="sent", campaign_id="c1", step=1)
+    pending = await st.add_outbox_item(prospect_id="p2", to_email="b@x.co.il", subject="s", body="b",
+                                       send_at="2026-10-16T08:00:00", status="pending_review", campaign_id="c1", step=1)
+    c = TestClient(dash.app)
+    assert c.post(f"/api/outbox/{sent}/reject").json()["success"] is False
+    assert (await st.get_outbox_item(sent))["status"] == "sent"
+    assert c.post(f"/api/outbox/{pending}/reject").json()["success"] is True
+    assert (await st.get_outbox_item(pending))["status"] == "rejected"
+
+
+async def test_reject_route_still_cancels_an_approved_unsent_item(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    import harvey.dashboard as dash
+
+    db_path = tmp_path / "h.db"
+    monkeypatch.setattr(dash, "DB_PATH", db_path)
+    st = StateManager(str(db_path))
+    await st.init_db()
+    queued = await st.add_outbox_item(prospect_id="p3", to_email="c@x.co.il", subject="s", body="b",
+                                      send_at="2026-10-16T08:00:00", status="approved", campaign_id="c1", step=1)
+    assert TestClient(dash.app).post(f"/api/outbox/{queued}/reject").json()["success"] is True
+    assert (await st.get_outbox_item(queued))["status"] == "rejected"

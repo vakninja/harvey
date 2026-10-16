@@ -925,6 +925,21 @@ class StateManager:
             await db.commit()
             return cursor.rowcount
 
+    async def reject_outbox(self, item_id: str) -> int:
+        """Easy Printer (P13): reject one item only while it has not gone out yet.
+
+        Pending and approved-but-unsent items can be rejected (the dashboard uses this to
+        cancel a queued email); a late Reject must not rewrite a sent email's history.
+        """
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "UPDATE outbox SET status = 'rejected', updated_at = ? "
+                "WHERE id = ? AND status IN ('pending_review', 'approved')",
+                (_utcnow().isoformat(), item_id),
+            )
+            await db.commit()
+            return cursor.rowcount
+
     async def cancel_pending_outbox_for_prospect(
         self, prospect_id: str, reason: str = "stop_on_reply"
     ) -> int:

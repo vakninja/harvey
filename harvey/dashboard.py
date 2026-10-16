@@ -865,8 +865,8 @@ async def outbox_reject(item_id: str):
     try:
         state = _state()
         await state.init_db()
-        await state.update_outbox_item(item_id, status="rejected")
-        return {"success": True}
+        n = await state.reject_outbox(item_id)
+        return {"success": bool(n)}
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)}, status_code=500)
 
